@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="連続再生">
+<link rel="manifest" href="manifest.json">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}[hidden]{display:none!important}</style>
+<title>おまかせ連続再生</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&family=M+PLUS+1p:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen player — big video stage, a strip of controls, and a reel of clips below */
+:root {
+  --bg: #f2f3f1;
+  --surface: #ffffff;
+  --fg: #1d2421;
+  --muted: #66716c;
+  --line: #d8ddd9;
+  --accent: #1f7a5c;
+  --accent-fg: #ffffff;
+  --stage: #0d1110;
+  --font-display: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
+  --font-body: "M PLUS 1p", "Hiragino Sans", "Noto Sans JP", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1b211e; --fg: #e8ece9; --muted: #98a39e; --line: #2c3430;
+  --accent: #4cc39a; --accent-fg: #08140f; --stage: #000000; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1b211e; --fg: #e8ece9; --muted: #98a39e; --line: #2c3430;
+  --accent: #4cc39a; --accent-fg: #08140f; --stage: #000000; color-scheme: dark }
+
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px;
+  box-sizing: border-box;
+}
+.wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: 1.5rem; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font-size: .9rem; margin: 0; }
+
+.stage {
+  position: relative; background: var(--stage); border-radius: 14px; overflow: hidden;
+  aspect-ratio: 16 / 9; max-width: 100%; width: 100%;
+  display: grid; place-items: center;
+}
+.stage video { width: 100%; height: 100%; object-fit: contain; background: var(--stage); }
+.empty {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+  color: #cfd8d3; padding: 24px; gap: 14px; align-content: center;
+}
+.empty p { margin: 0; max-width: 34em; }
+.empty .big { font-family: var(--font-display); font-size: 1.25rem; color: #ffffff; }
+.counter {
+  position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,.55); color: #fff;
+  font-size: .8rem; padding: 2px 10px; border-radius: 99px; font-variant-numeric: tabular-nums;
+}
+.tapsound {
+  position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+}
+
+.btn {
+  font: 500 1rem var(--font-body); border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+  border-radius: 12px; padding: 10px 16px; min-height: 46px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 500; }
+.btn:focus-visible, .toggle input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn[disabled] { opacity: .45; cursor: default; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.controls .spacer { flex: 1 1 0; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; color: var(--fg); }
+.toggle input { width: 22px; height: 22px; accent-color: var(--accent); margin: 0; }
+input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+.reel { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.clip {
+  text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 10px; cursor: pointer; color: var(--fg); font: inherit; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.clip .n { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+.clip .name { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip.now { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.clip.now .n { color: var(--accent); font-weight: 500; }
+
+.help { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 12px; }
+.help ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
+
+/* 大画面モード */
+body.theater .stage {
+  position: fixed; inset: 0; z-index: 20; border-radius: 0; aspect-ratio: auto; height: 100%;
+}
+.exit {
+  position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: calc(10px + env(safe-area-inset-right, 0px));
+  background: rgba(0,0,0,.55); color: #fff; border: 0; border-radius: 99px; padding: 8px 14px;
+  font: 500 .9rem var(--font-body); cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>おまかせ連続再生</h1>
+    <p class="sub">動画を選ぶだけ。1本終わると次が自動で始まります。</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline webkit-playsinline preload="auto"></video>
+    <div class="empty" id="empty">
+      <p class="big">まず「動画を選ぶ」をタップ</p>
+      <p>「写真ライブラリ」からならiCloud写真の動画、「ファイルを選択」からならiCloud Driveの動画を選べます。何本でもまとめて選べます。</p>
+      <button class="btn primary" id="pickEmpty" type="button">動画を選ぶ</button>
+    </div>
+    <span class="counter" id="counter" hidden></span>
+    <button class="btn primary tapsound" id="tapToPlay" type="button" hidden>タップして再生</button>
+    <button class="exit" id="exit" type="button" hidden>大画面を閉じる</button>
+  </div>
+
+  <div class="controls">
+    <button class="btn primary" id="pick" type="button">動画を選ぶ</button>
+    <button class="btn" id="prev" type="button" disabled aria-label="前の動画">◀︎ 前へ</button>
+    <button class="btn" id="playpause" type="button" disabled>一時停止</button>
+    <button class="btn" id="next" type="button" disabled aria-label="次の動画">次へ ▶︎</button>
+    <button class="btn" id="theater" type="button" disabled>大画面</button>
+    <button class="btn" id="a2hs" type="button">ホーム画面に追加</button>
+    <span class="spacer"></span>
+    <label class="toggle"><input type="checkbox" id="loop" checked><span>最後まで行ったら最初から</span></label>
+    <label class="toggle"><input type="checkbox" id="shuffle"><span>シャッフル</span></label>
+    <label class="toggle"><input type="checkbox" id="mute"><span>消音</span></label>
+  </div>
+  <div class="help" id="a2hsHelp" hidden>
+    ホーム画面に追加する方法（iPadのSafari）
+    <ul>
+      <li>1. 画面右上の共有ボタン（□に↑のマーク）をタップ</li>
+      <li>2. 一覧から「ホーム画面に追加」を選ぶ（見つからなければ下にスクロール）</li>
+      <li>3. 右上の「追加」をタップ。次からはホーム画面のアイコンで開けます</li>
+    </ul>
+  </div>
+  <input type="file" id="file" accept="video/*" multiple>
+
+  <div class="reel" id="reel" aria-label="再生リスト"></div>
+
+  <div class="help">
+    使い方のコツ
+    <ul>
+      <li>選んだ動画はこのiPadの中だけで再生され、どこにも送られません。</li>
+      <li>iCloudにしかない動画は、選んだときにダウンロードされるので少し待つことがあります。</li>
+      <li>動画を追加したいときは、もう一度「動画を選ぶ」でリストの後ろに足せます。</li>
+      <li>一覧の動画をタップすると、そこから再生します。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('video'), file = $('file'), reel = $('reel');
+  var list = [], order = [], pos = -1;
+
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  ['loop', 'shuffle', 'mute'].forEach(function (k) {
+    var v = load('opt-' + k);
+    if (v !== null) $(k).checked = v === '1';
+    $(k).addEventListener('change', function () {
+      store('opt-' + k, $(k).checked ? '1' : '0');
+      if (k === 'mute') video.muted = $(k).checked;
+      if (k === 'shuffle') rebuildOrder(true);
+    });
+  });
+  video.muted = $('mute').checked;
+
+  function pick() { file.click(); }
+  $('pick').onclick = pick; $('pickEmpty').onclick = pick;
+
+  file.addEventListener('change', function () {
+    var files = Array.prototype.slice.call(file.files || []);
+    if (!files.length) return;
+    var first = list.length;
+    files.forEach(function (f) { list.push({ name: f.name, url: URL.createObjectURL(f) }); });
+    file.value = '';
+    rebuildOrder(false);
+    renderReel();
+    if (pos < 0 || video.paused) goTo(order.indexOf(first));
+  });
+
+  function rebuildOrder(keepCurrent) {
+    var cur = pos >= 0 ? order[pos] : -1;
+    order = list.map(function (_, i) { return i; });
+    if ($('shuffle').checked) {
+      for (var i = order.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1)); var t = order[i]; order[i] = order[j]; order[j] = t;
+      }
+      if (cur >= 0) { order.splice(order.indexOf(cur), 1); order.unshift(cur); }
+    }
+    pos = cur >= 0 ? order.indexOf(cur) : -1;
+  }
+
+  function goTo(p) {
+    if (!order.length) return;
+    pos = p;
+    var item = list[order[pos]];
+    video.src = item.url;
+    video.muted = $('mute').checked;
+    $('empty').hidden = true;
+    play();
+    update();
+  }
+
+  function play() {
+    $('tapToPlay').hidden = true;
+    var pr = video.play();
+    if (pr && pr.catch) pr.catch(function () {
+      // 音ありの自動再生が止められたら、消音で始めてボタンで音を戻す
+      if (!video.muted) {
+        video.muted = true;
+        video.play().then(function () { $('tapToPlay').textContent = '音を出す'; $('tapToPlay').hidden = false; })
+          .catch(function () { $('tapToPlay').textContent = 'タップして再生'; $('tapToPlay').hidden = false; });
+      } else { $('tapToPlay').textContent = 'タップして再生'; $('tapToPlay').hidden = false; }
+    });
+  }
+  $('tapToPlay').onclick = function () { video.muted = $('mute').checked; play(); };
+
+  function next() {
+    if (pos + 1 < order.length) goTo(pos + 1);
+    else if ($('loop').checked) { if ($('shuffle').checked) { pos = -1; rebuildOrder(false); } goTo(0); }
+    else update();
+  }
+  function prev() { if (pos > 0) goTo(pos - 1); else if (order.length) goTo(0); }
+
+  video.addEventListener('ended', next);
+  video.addEventListener('error', function () { if (order.length > 1) next(); });
+  video.addEventListener('play', update);
+  video.addEventListener('pause', update);
+  $('next').onclick = next; $('prev').onclick = prev;
+  $('playpause').onclick = function () { if (video.paused) play(); else video.pause(); };
+  video.addEventListener('click', function () { if (video.paused) play(); else video.pause(); });
+
+  // 本当のフルスクリーンを試し、だめならページ内いっぱいに広げる
+  function fsEl() { return document.fullscreenElement || document.webkitFullscreenElement; }
+  $('theater').onclick = function () {
+    var st = $('stage');
+    document.body.classList.add('theater'); $('exit').hidden = false;
+    var req = st.requestFullscreen || st.webkitRequestFullscreen;
+    if (req) { try { var r = req.call(st); if (r && r.catch) r.catch(function () {}); } catch (e) {} }
+  };
+  function onFs() { if (!fsEl() && !document.body.classList.contains('theater')) return; if (!fsEl() && fsWas) { document.body.classList.remove('theater'); $('exit').hidden = true; } fsWas = !!fsEl(); }
+  var fsWas = false;
+  document.addEventListener('fullscreenchange', onFs);
+  document.addEventListener('webkitfullscreenchange', onFs);
+  $('a2hs').onclick = function () { $('a2hsHelp').hidden = !$('a2hsHelp').hidden; };
+  $('exit').onclick = function () {
+    document.body.classList.remove('theater'); $('exit').hidden = true;
+    var ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (fsEl() && ex) { try { var r = ex.call(document); if (r && r.catch) r.catch(function () {}); } catch (e) {} }
+  };
+
+  function update() {
+    var has = order.length > 0;
+    ['prev', 'next', 'playpause', 'theater'].forEach(function (id) { $(id).disabled = !has; });
+    $('playpause').textContent = video.paused ? '再生' : '一時停止';
+    $('counter').hidden = !has;
+    if (has) $('counter').textContent = (pos + 1) + ' / ' + order.length;
+    var cur = pos >= 0 ? order[pos] : -1;
+    Array.prototype.forEach.call(reel.children, function (el, i) { el.classList.toggle('now', i === cur); });
+  }
+
+  function renderReel() {
+    reel.innerHTML = '';
+    list.forEach(function (item, i) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'clip';
+      var n = document.createElement('span'); n.className = 'n'; n.textContent = 'No.' + (i + 1);
+      var nm = document.createElement('span'); nm.className = 'name'; nm.textContent = item.name;
+      b.appendChild(n); b.appendChild(nm);
+      b.onclick = function () { goTo(order.indexOf(i)); };
+      reel.appendChild(b);
+    });
+    update();
+  }
+
+  // 再生中に画面が暗くならないように（使えない環境では何もしない）
+  var lock = null;
+  function wake() {
+    if (!('wakeLock' in navigator) || lock) return;
+    navigator.wakeLock.request('screen').then(function (l) { lock = l; l.addEventListener('release', function () { lock = null; }); }).catch(function () {});
+  }
+  video.addEventListener('play', wake);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && !video.paused) wake(); });
+})();
+</script>
+</body>
+</html>

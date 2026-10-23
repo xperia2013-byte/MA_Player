@@ -58,7 +58,8 @@ h1 { font-family: var(--font-display); font-weight: 700; font-size: 1.5rem; marg
 /* 動画は枠いっぱいに絶対配置し、縦長でも横長でも切らずに全体を表示する */
 .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--stage); transition: opacity .25s ease; }
 .stage video.switching { opacity: 0; }
-.stage:fullscreen, .stage:-webkit-full-screen { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
+.stage:fullscreen { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
+.stage:-webkit-full-screen { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
 .empty {
   position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
   color: #cfd8d3; padding: 24px; gap: 14px; align-content: center;

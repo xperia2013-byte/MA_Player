@@ -159,6 +159,7 @@ body.theater .stage {
       <li>iCloudにしかない動画は、選んだときにダウンロードされるので少し待つことがあります。</li>
       <li>動画を追加したいときは、もう一度「動画を選ぶ」でリストの後ろに足せます。</li>
       <li>一覧の動画をタップすると、そこから再生します。</li>
+      <li>動画の上で左にスワイプすると次へ、右にスワイプすると前に戻ります。</li>
     </ul>
   </div>
 </div>
@@ -290,6 +291,19 @@ body.theater .stage {
     });
     update();
   }
+
+  // 左スワイプで次の動画、右スワイプで前の動画
+  var sx = 0, sy = 0, st = 0;
+  $('stage').addEventListener('touchstart', function (e) {
+    if (e.touches.length !== 1) return;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+  }, { passive: true });
+  $('stage').addEventListener('touchend', function (e) {
+    if (!order.length || !e.changedTouches.length) return;
+    var dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Date.now() - st > 800 || Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) next(); else prev();
+  }, { passive: true });
 
   // 再生中に画面が暗くならないように（使えない環境では何もしない）
   var lock = null;

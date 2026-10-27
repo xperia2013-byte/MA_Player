@@ -108,10 +108,10 @@ body.theater .stage {
   position: fixed; inset: 0; z-index: 20; border-radius: 0; aspect-ratio: auto;
   width: 100vw; height: 100vh; height: 100dvh; max-height: none; margin: 0;
 }
-/* 同じ動画をくり返すボタン（再生画面の右下に小さく） */
+/* 同じ動画をくり返すボタン（再生画面の左下に小さく） */
 .repeat1 {
   position: absolute; z-index: 2;
-  bottom: calc(10px + env(safe-area-inset-bottom, 0px)); right: calc(10px + env(safe-area-inset-right, 0px));
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px)); left: calc(10px + env(safe-area-inset-left, 0px));
   background: rgba(0,0,0,.45); color: #fff; border: 1px solid rgba(255,255,255,.25); border-radius: 99px;
   padding: 4px 10px; font: 500 .75rem var(--font-body); cursor: pointer; opacity: .75;
 }
@@ -214,15 +214,51 @@ body.theater .stage {
   function pick() { file.click(); }
   $('pick').onclick = pick; $('pickEmpty').onclick = pick;
 
+  // 動画の撮影日時を読む。MP4/MOVのmvhdにある作成日時を使い、なければファイルの更新日時
+  function readMovieDate(f) {
+    var fallback = f.lastModified || 0;
+    function head(off) { return f.slice(off, off + 16).arrayBuffer().then(function (b) { return new DataView(b); }); }
+    function findMoov(off, n) {
+      if (off + 8 > f.size || n > 64) return Promise.resolve(null);
+      return head(off).then(function (v) {
+        if (v.byteLength < 8) return null;
+        var size = v.getUint32(0), type = String.fromCharCode(v.getUint8(4), v.getUint8(5), v.getUint8(6), v.getUint8(7));
+        if (size === 1 && v.byteLength >= 16) size = v.getUint32(8) * 4294967296 + v.getUint32(12);
+        else if (size === 0) size = f.size - off;
+        if (size < 8) return null;
+        if (type === 'moov') return f.slice(off, off + Math.min(size, 8 * 1024 * 1024)).arrayBuffer();
+        return findMoov(off + size, n + 1);
+      });
+    }
+    return findMoov(0, 0).then(function (buf) {
+      if (!buf) return fallback;
+      var u = new Uint8Array(buf);
+      for (var i = 8; i + 24 < u.length; i++) {
+        if (u[i] === 0x6d && u[i + 1] === 0x76 && u[i + 2] === 0x68 && u[i + 3] === 0x64) { // 'mvhd'
+          var v = new DataView(buf, i + 4), t = v.getUint8(0) === 1 ? v.getUint32(4) * 4294967296 + v.getUint32(8) : v.getUint32(4);
+          var ms = (t - 2082844800) * 1000; // 1904年起点の秒をUnix時刻に
+          return ms > 0 ? ms : fallback;
+        }
+      }
+      return fallback;
+    }).catch(function () { return fallback; });
+  }
+
   file.addEventListener('change', function () {
     var files = Array.prototype.slice.call(file.files || []);
     if (!files.length) return;
-    var first = list.length;
-    files.forEach(function (f) { list.push({ name: f.name, url: URL.createObjectURL(f) }); });
     file.value = '';
-    rebuildOrder(false);
-    renderReel();
-    if (pos < 0 || video.paused) goTo(order.indexOf(first));
+    Promise.all(files.map(readMovieDate)).then(function (dates) {
+      var cur = pos >= 0 ? list[order[pos]] : null;
+      files.forEach(function (f, i) { list.push({ name: f.name, url: URL.createObjectURL(f), date: dates[i] }); });
+      // 新しい日付から古い日付の順に並べる
+      list.sort(function (a, b) { return b.date - a.date; });
+      order = list.map(function (_, i) { return i; });
+      pos = cur ? list.indexOf(cur) : -1;
+      rebuildOrder(true);
+      renderReel();
+      if (pos < 0 || video.paused) goTo(0);
+    });
   });
 
   function rebuildOrder(keepCurrent) {
@@ -317,7 +353,8 @@ body.theater .stage {
     list.forEach(function (item, i) {
       var b = document.createElement('button');
       b.type = 'button'; b.className = 'clip';
-      var n = document.createElement('span'); n.className = 'n'; n.textContent = 'No.' + (i + 1);
+      var n = document.createElement('span'); n.className = 'n'; var d = item.date ? new Date(item.date) : null;
+      n.textContent = 'No.' + (i + 1) + (d ? ' · ' + d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() : '');
       var nm = document.createElement('span'); nm.className = 'name'; nm.textContent = item.name;
       b.appendChild(n); b.appendChild(nm);
       b.onclick = function () { goTo(order.indexOf(i)); };

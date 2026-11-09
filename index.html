@@ -52,7 +52,6 @@ h1 { font-family: var(--font-display); font-weight: 700; font-size: 1.5rem; marg
   position: relative; background: var(--stage); border-radius: 14px; overflow: hidden;
   aspect-ratio: var(--ar, 16 / 9); max-width: 100%; width: 100%;
   max-height: 78vh; max-height: 78dvh; margin-inline: auto;
-  transition: aspect-ratio .35s ease;
   display: grid; place-items: center;
 }
 /* 動画は枠いっぱいに絶対配置し、縦長でも横長でも切らずに全体を表示する */
@@ -383,19 +382,21 @@ body.theater .stage {
   var thumbBusy = false;
   function thumbQueue() {
     if (thumbBusy) return;
+    // 本編が読み込み中のあいだはサムネイル作りを待つ（再生を優先）
+    if (video.src && !video.paused && video.readyState < 3) { setTimeout(thumbQueue, 1000); return; }
     var item = list.filter(function (it) { return !it.thumb && !it.thumbFailed; })[0];
     if (!item) return;
     thumbBusy = true;
     makeThumb(item.url).then(function (src) {
       if (src) { item.thumb = src; if (item.img) { item.img.src = src; item.img.hidden = false; } }
       else item.thumbFailed = true;
-      thumbBusy = false; thumbQueue();
+      thumbBusy = false; setTimeout(thumbQueue, 800);
     });
   }
   function makeThumb(url) {
     return new Promise(function (resolve) {
       var v = document.createElement('video'), done = false;
-      v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.preload = 'auto';
+      v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.preload = 'metadata';
       function finish(src) {
         if (done) return; done = true;
         v.removeAttribute('src'); try { v.load(); } catch (e) {}
@@ -412,13 +413,7 @@ body.theater .stage {
       v.addEventListener('loadedmetadata', function () { v.currentTime = Math.min(0.5, (v.duration || 1) / 2); });
       v.addEventListener('seeked', draw);
       v.addEventListener('error', function () { finish(null); });
-      // シークで絵が出ない端末向けに、消音で一瞬だけ再生して撮る
-      setTimeout(function () {
-        if (done) return;
-        v.addEventListener('playing', function () { v.pause(); draw(); });
-        var p = v.play(); if (p && p.catch) p.catch(function () {});
-      }, 3000);
-      setTimeout(function () { finish(null); }, 10000);
+      setTimeout(function () { finish(null); }, 6000);
       v.src = url;
     });
   }

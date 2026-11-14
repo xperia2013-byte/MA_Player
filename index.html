@@ -375,48 +375,21 @@ body.theater .stage {
       reel.appendChild(b);
     });
     update();
-    thumbQueue();
   }
 
-  // サムネイルを1本ずつ作る（動画の0.5秒あたりの1コマ）
-  var thumbBusy = false;
-  function thumbQueue() {
-    if (thumbBusy) return;
-    // 本編が読み込み中のあいだはサムネイル作りを待つ（再生を優先）
-    if (video.src && !video.paused && video.readyState < 3) { setTimeout(thumbQueue, 1000); return; }
-    var item = list.filter(function (it) { return !it.thumb && !it.thumbFailed; })[0];
-    if (!item) return;
-    thumbBusy = true;
-    makeThumb(item.url).then(function (src) {
-      if (src) { item.thumb = src; if (item.img) { item.img.src = src; item.img.hidden = false; } }
-      else item.thumbFailed = true;
-      thumbBusy = false; setTimeout(thumbQueue, 800);
-    });
-  }
-  function makeThumb(url) {
-    return new Promise(function (resolve) {
-      var v = document.createElement('video'), done = false;
-      v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.preload = 'metadata';
-      function finish(src) {
-        if (done) return; done = true;
-        v.removeAttribute('src'); try { v.load(); } catch (e) {}
-        resolve(src);
-      }
-      function draw() {
-        try {
-          var w = 240, h = Math.round(w * (v.videoHeight || 9) / (v.videoWidth || 16));
-          var c = document.createElement('canvas'); c.width = w; c.height = h;
-          c.getContext('2d').drawImage(v, 0, 0, w, h);
-          finish(c.toDataURL('image/jpeg', 0.7));
-        } catch (e) { finish(null); }
-      }
-      v.addEventListener('loadedmetadata', function () { v.currentTime = Math.min(0.5, (v.duration || 1) / 2); });
-      v.addEventListener('seeked', draw);
-      v.addEventListener('error', function () { finish(null); });
-      setTimeout(function () { finish(null); }, 6000);
-      v.src = url;
-    });
-  }
+  // サムネイルは再生中の動画から1コマだけ写す（裏で別の動画を読み込まないので再生が重くならない）
+  var thumbCanvas = document.createElement('canvas');
+  video.addEventListener('timeupdate', function () {
+    var item = pos >= 0 ? list[order[pos]] : null;
+    if (!item || item.thumb || item.thumbFailed || video.currentTime < 0.3 || !video.videoWidth) return;
+    try {
+      var w = 240, h = Math.round(w * video.videoHeight / video.videoWidth);
+      thumbCanvas.width = w; thumbCanvas.height = h;
+      thumbCanvas.getContext('2d').drawImage(video, 0, 0, w, h);
+      item.thumb = thumbCanvas.toDataURL('image/jpeg', 0.7);
+      if (item.img) { item.img.src = item.thumb; item.img.hidden = false; }
+    } catch (e) { item.thumbFailed = true; }
+  });
 
   // 左スワイプで次の動画、右スワイプで前の動画
   var sx = 0, sy = 0, st = 0;

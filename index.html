@@ -68,6 +68,10 @@ h1 { font-family: var(--font-display); font-weight: 700; font-size: 1.5rem; marg
   position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,.55); color: #fff;
   font-size: .8rem; padding: 2px 10px; border-radius: 99px; font-variant-numeric: tabular-nums;
 }
+.diag {
+  position: absolute; bottom: 40px; left: 10px; margin: 0; background: rgba(0,0,0,.7); color: #fff;
+  font: .75rem/1.5 ui-monospace, Menlo, monospace; padding: 6px 10px; border-radius: 8px; pointer-events: none;
+}
 .tapsound {
   position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
 }
@@ -146,6 +150,7 @@ body.theater .stage {
       <button class="btn primary" id="pickEmpty" type="button">動画を選ぶ</button>
     </div>
     <span class="counter" id="counter" hidden></span>
+    <pre class="diag" id="diag" hidden></pre>
     <button class="btn primary tapsound" id="tapToPlay" type="button" hidden>タップして再生</button>
     <button class="exit" id="exit" type="button" hidden>大画面を閉じる</button>
     <button class="repeat1" id="repeat1" type="button" aria-pressed="false" title="同じ動画をくり返す">🔂 くり返し</button>
@@ -220,23 +225,29 @@ body.theater .stage {
   function pick() { file.click(); }
   $('pick').onclick = pick; $('pickEmpty').onclick = pick;
 
-  // 動画の撮影日時を読む。MP4/MOVのmvhdにある作成日時を使い、なければファイルの更新日時
-  function readMovieDate(f) {
-    var fallback = f.lastModified || 0;
-    function head(off) { return f.slice(off, off + 16).arrayBuffer().then(function (b) { return new DataView(b); }); }
-    function findMoov(off, n) {
+  // MP4/MOVの目次（moov）だけをファイルから読み出す
+  function str4(v, p) { return String.fromCharCode(v.getUint8(p), v.getUint8(p + 1), v.getUint8(p + 2), v.getUint8(p + 3)); }
+  function readMoov(f) {
+    function find(off, n) {
       if (off + 8 > f.size || n > 64) return Promise.resolve(null);
-      return head(off).then(function (v) {
+      return f.slice(off, off + 16).arrayBuffer().then(function (b) {
+        var v = new DataView(b);
         if (v.byteLength < 8) return null;
-        var size = v.getUint32(0), type = String.fromCharCode(v.getUint8(4), v.getUint8(5), v.getUint8(6), v.getUint8(7));
+        var size = v.getUint32(0), type = str4(v, 4);
         if (size === 1 && v.byteLength >= 16) size = v.getUint32(8) * 4294967296 + v.getUint32(12);
         else if (size === 0) size = f.size - off;
         if (size < 8) return null;
         if (type === 'moov') return f.slice(off, off + Math.min(size, 8 * 1024 * 1024)).arrayBuffer();
-        return findMoov(off + size, n + 1);
+        return find(off + size, n + 1);
       });
     }
-    return findMoov(0, 0).then(function (buf) {
+    return find(0, 0);
+  }
+
+  // 動画の撮影日時を読む。MP4/MOVのmvhdにある作成日時を使い、なければファイルの更新日時
+  function readMovieDate(f) {
+    var fallback = f.lastModified || 0;
+    return readMoov(f).then(function (buf) {
       if (!buf) return fallback;
       var u = new Uint8Array(buf);
       for (var i = 8; i + 24 < u.length; i++) {
@@ -256,7 +267,11 @@ body.theater .stage {
     file.value = '';
     Promise.all(files.map(readMovieDate)).then(function (dates) {
       var cur = pos >= 0 ? list[order[pos]] : null;
-      files.forEach(function (f, i) { list.push({ name: f.name, url: URL.createObjectURL(f), date: dates[i] }); });
+      var added = files.map(function (f, i) {
+        return { name: f.name, url: URL.createObjectURL(f), date: dates[i], file: f,
+          keys: ['n|' + f.name + '|' + f.size, 'd|' + dates[i] + '|' + f.size] }; // サムネイル保存用の名前
+      });
+      list = list.concat(added);
       // 新しい日付から古い日付の順に並べる
       list.sort(function (a, b) { return b.date - a.date; });
       order = list.map(function (_, i) { return i; });
@@ -264,6 +279,7 @@ body.theater .stage {
       rebuildOrder(true);
       renderReel();
       if (pos < 0 || video.paused) goTo(0);
+      added.forEach(wantThumb);
     });
   });
 
@@ -283,7 +299,6 @@ body.theater .stage {
     if (!order.length) return;
     pos = p;
     var item = list[order[pos]];
-    video.classList.add('switching');
     video.src = item.url;
     video.muted = $('mute').checked;
     $('empty').hidden = true;
@@ -314,7 +329,6 @@ body.theater .stage {
 
   video.addEventListener('loadedmetadata', function () {
     if (video.videoWidth && video.videoHeight) $('stage').style.setProperty('--ar', video.videoWidth + ' / ' + video.videoHeight);
-    video.classList.remove('switching');
   });
   video.addEventListener('ended', next);
   video.addEventListener('error', function () { if (order.length > 1) next(); });
@@ -376,19 +390,234 @@ body.theater .stage {
     update();
   }
 
-  // サムネイルは再生中の動画から1コマだけ写す（裏で別の動画を読み込まないので再生が重くならない）
+  // ---- サムネイル ----
+  // 再生中の<video>をcanvasに写すと、Safariはその動画にコマの取り出し口を付け、以後その動画の全コマを複製し続けるため
+  // 再生が重くなる。そこで<video>には触れず、ファイルから鍵コマ1枚だけを直接デコードして作り、
+  // IndexedDBに保存して次回からは読み出すだけにする。
+  var stat = { cached: 0, direct: 0, live: 0, waits: 0 };
+
+  var dbp = null;
+  function db() {
+    if (!dbp) dbp = new Promise(function (res, rej) {
+      var r = indexedDB.open('ma-player', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('thumbs'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    return dbp;
+  }
+  function cacheGet(keys) {
+    return db().then(function (d) {
+      return new Promise(function (res) {
+        var os = d.transaction('thumbs').objectStore('thumbs'), i = 0;
+        (function step() {
+          if (i >= keys.length) return res(null);
+          var r = os.get(keys[i++]);
+          r.onsuccess = function () { if (r.result) res(r.result); else step(); };
+          r.onerror = function () { res(null); };
+        })();
+      });
+    }).catch(function () { return null; });
+  }
+  function cachePut(keys, url) {
+    db().then(function (d) {
+      var os = d.transaction('thumbs', 'readwrite').objectStore('thumbs');
+      keys.forEach(function (k) { os.put(url, k); });
+    }).catch(function () {});
+  }
+
+  function setThumb(item, url) {
+    item.thumb = url;
+    if (item.img) { item.img.src = url; item.img.hidden = false; }
+  }
+  // 保存済みならそれを使い、なければ1本ずつ間を空けて作る
+  var jobs = [], busy = false;
+  function wantThumb(item) {
+    cacheGet(item.keys).then(function (url) {
+      if (url) { stat.cached++; setThumb(item, url); }
+      else { jobs.push(item); pump(); }
+    });
+  }
+  function pump() {
+    if (busy || !jobs.length) return;
+    busy = true;
+    var item = jobs.shift();
+    makeThumb(item.file).then(function (url) {
+      stat.direct++; setThumb(item, url); cachePut(item.keys, url);
+    }, function () { item.live = true; }) // 直接作れなかった動画だけ、再生中に写す方法に回す
+      .then(function () { busy = false; setTimeout(pump, 150); });
+  }
+
   var thumbCanvas = document.createElement('canvas');
+  function paint(src, sw, sh, rot) {
+    var turn = rot % 180 !== 0, ow = turn ? sh : sw, oh = turn ? sw : sh;
+    var w = 240, h = Math.max(1, Math.round(w * oh / ow)), dw = turn ? h : w, dh = turn ? w : h;
+    thumbCanvas.width = w; thumbCanvas.height = h;
+    var c = thumbCanvas.getContext('2d');
+    c.translate(w / 2, h / 2); c.rotate(rot * Math.PI / 180);
+    c.drawImage(src, -dw / 2, -dh / 2, dw, dh);
+    if (!c.getImageData(w >> 1, h >> 1, 1, 1).data[3]) throw new Error('blank');
+    return thumbCanvas.toDataURL('image/jpeg', 0.7);
+  }
+
+  // ファイルから鍵コマ1枚だけを読み、WebCodecsでデコードして縮小画像にする
+  function makeThumb(f) {
+    if (!window.VideoDecoder || !window.EncodedVideoChunk) return Promise.reject(new Error('no webcodecs'));
+    var t;
+    return readMoov(f).then(function (buf) {
+      t = buf && keyFrame(buf);
+      if (!t) throw new Error('no track');
+      return VideoDecoder.isConfigSupported({ codec: t.codec, description: t.desc });
+    }).then(function (sup) {
+      if (!sup.supported) throw new Error('codec');
+      return f.slice(t.offset, t.offset + t.size).arrayBuffer();
+    }).then(function (data) {
+      return new Promise(function (res, rej) {
+        var done = false, timer = setTimeout(function () { finish(rej, new Error('timeout')); }, 5000);
+        function finish(fn, val) { if (done) return; done = true; clearTimeout(timer); try { dec.close(); } catch (e) {} fn(val); }
+        var dec = new VideoDecoder({
+          output: function (fr) {
+            var url, err;
+            if (!done) { try { url = paint(fr, fr.displayWidth, fr.displayHeight, t.rot); } catch (e) { err = e; } }
+            fr.close();
+            if (url) finish(res, url); else finish(rej, err);
+          },
+          error: function (e) { finish(rej, e); }
+        });
+        dec.configure({ codec: t.codec, description: t.desc, optimizeForLatency: true });
+        dec.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, data: data }));
+        dec.flush().catch(function (e) { finish(rej, e); });
+      });
+    });
+  }
+
+  // moovの中の箱を順にたどる。fnがtrueを返したら止める
+  function boxes(v, from, to, fn) {
+    for (var p = from; p + 8 <= to;) {
+      var size = v.getUint32(p), hdr = 8;
+      if (size === 1 && p + 16 <= to) { size = v.getUint32(p + 8) * 4294967296 + v.getUint32(p + 12); hdr = 16; }
+      else if (size === 0) size = to - p;
+      if (size < hdr) return;
+      if (fn(str4(v, p + 4), p + hdr, Math.min(p + size, to))) return;
+      p += size;
+    }
+  }
+  function child(v, range, want) {
+    var r = null;
+    if (range) boxes(v, range[0], range[1], function (t, a, b) { if (t === want) { r = [a, b]; return true; } });
+    return r;
+  }
+  function hex2(x) { return (x < 16 ? '0' : '') + x.toString(16); }
+  function hevcCodec(u, fmt) {
+    var flags = 0, i, end = 11;
+    for (i = 0; i < 32; i++) if (u[2 + (i >> 3)] & (0x80 >> (i & 7))) flags += Math.pow(2, i); // ビットの並びを逆にした値
+    var s = (fmt === 'hev1' ? 'hev1.' : 'hvc1.') + ['', 'A', 'B', 'C'][u[1] >> 6] + (u[1] & 31) + '.' +
+      flags.toString(16).toUpperCase() + '.' + (u[1] & 32 ? 'H' : 'L') + u[12];
+    while (end >= 6 && !u[end]) end--;
+    for (i = 6; i <= end; i++) s += '.' + u[i].toString(16).toUpperCase();
+    return s;
+  }
+  // 映像トラックから、1秒付近の鍵コマの場所とデコード設定を取り出す
+  function keyFrame(buf) {
+    var v = new DataView(buf), trak = null, mdia = null, i;
+    var moov = child(v, [0, v.byteLength], 'moov');
+    if (!moov) return null;
+    boxes(v, moov[0], moov[1], function (t, a, b) {
+      if (t !== 'trak') return false;
+      var md = child(v, [a, b], 'mdia'), h = child(v, md, 'hdlr');
+      if (!h || str4(v, h[0] + 8) !== 'vide') return false;
+      trak = [a, b]; mdia = md; return true;
+    });
+    if (!trak) return null;
+    var stbl = child(v, child(v, mdia, 'minf'), 'stbl');
+    var stsd = child(v, stbl, 'stsd'), stsz = child(v, stbl, 'stsz'), stsc = child(v, stbl, 'stsc'),
+      stco = child(v, stbl, 'stco'), co64 = child(v, stbl, 'co64'), stss = child(v, stbl, 'stss'),
+      mdhd = child(v, mdia, 'mdhd'), tkhd = child(v, trak, 'tkhd');
+    if (!stsd || !stsz || !stsc || !(stco || co64)) return null;
+
+    // コーデックの種類と設定（avcC / hvcC）
+    var e = stsd[0] + 8, fmt = str4(v, e + 4), ext = [e + 86, Math.min(e + v.getUint32(e), stsd[1])], cfg, codec, u;
+    if (fmt === 'avc1' || fmt === 'avc3') {
+      cfg = child(v, ext, 'avcC'); if (!cfg) return null;
+      u = new Uint8Array(buf, cfg[0], cfg[1] - cfg[0]);
+      codec = fmt + '.' + hex2(u[1]) + hex2(u[2]) + hex2(u[3]);
+    } else if (fmt === 'hvc1' || fmt === 'hev1' || fmt === 'dvh1' || fmt === 'dvhe') {
+      cfg = child(v, ext, 'hvcC'); if (!cfg) return null;
+      u = new Uint8Array(buf, cfg[0], cfg[1] - cfg[0]);
+      codec = hevcCodec(u, fmt);
+    } else return null;
+
+    // 1秒目あたりのコマ番号を求め、それ以前でいちばん近い鍵コマを選ぶ
+    var n = v.getUint32(stsz[0] + 8), uni = v.getUint32(stsz[0] + 4), k = 0;
+    if (!n) return null;
+    if (mdhd) {
+      var v1 = v.getUint8(mdhd[0]) === 1, scale = v.getUint32(mdhd[0] + (v1 ? 20 : 12)),
+        dur = v1 ? v.getUint32(mdhd[0] + 24) * 4294967296 + v.getUint32(mdhd[0] + 28) : v.getUint32(mdhd[0] + 16);
+      if (scale && dur) k = Math.min(n - 1, Math.floor(n * scale / dur));
+    }
+    if (stss) {
+      var best = 0, cnt = v.getUint32(stss[0] + 4);
+      for (i = 0; i < cnt; i++) { var sn = v.getUint32(stss[0] + 8 + 4 * i) - 1; if (sn > k) break; best = sn; }
+      k = best;
+    }
+
+    // そのコマがファイルのどこにあるか
+    function sz(j) { return uni || v.getUint32(stsz[0] + 12 + 4 * j); }
+    function chunkOff(c) {
+      return co64 ? v.getUint32(co64[0] + 8 + 8 * c) * 4294967296 + v.getUint32(co64[0] + 12 + 8 * c) : v.getUint32(stco[0] + 8 + 4 * c);
+    }
+    var chunks = v.getUint32((co64 || stco)[0] + 4), runs = v.getUint32(stsc[0] + 4), base = 0, off = -1;
+    for (i = 0; i < runs; i++) {
+      var q = stsc[0] + 8 + 12 * i, first = v.getUint32(q) - 1, per = v.getUint32(q + 4),
+        last = i + 1 < runs ? v.getUint32(q + 12) - 1 : chunks, span = (last - first) * per;
+      if (per && k < base + span) {
+        var ci = Math.floor((k - base) / per);
+        off = chunkOff(first + ci);
+        for (var j = base + ci * per; j < k; j++) off += sz(j);
+        break;
+      }
+      base += span;
+    }
+    var size = sz(k);
+    if (off < 0 || !size || size > 16 * 1024 * 1024) return null;
+
+    // 縦撮りなどの回転
+    var rot = 0;
+    if (tkhd) {
+      var m = tkhd[0] + (v.getUint8(tkhd[0]) === 1 ? 52 : 40);
+      rot = (Math.round(Math.atan2(v.getInt32(m + 4), v.getInt32(m)) / (Math.PI / 2)) * 90 + 360) % 360;
+    }
+    return { codec: codec, desc: buf.slice(cfg[0], cfg[1]), offset: off, size: size, rot: rot };
+  }
+
+  // 直接作れなかった動画（古いiPadOSや特殊な形式）だけは再生中の動画から1コマ写す。保存するので次回からは写さない
   video.addEventListener('timeupdate', function () {
     var item = pos >= 0 ? list[order[pos]] : null;
-    if (!item || item.thumb || item.thumbFailed || video.currentTime < 0.3 || !video.videoWidth) return;
+    if (!item || !item.live || item.thumb || video.currentTime < 0.3 || !video.videoWidth) return;
+    item.live = false;
     try {
-      var w = 240, h = Math.round(w * video.videoHeight / video.videoWidth);
-      thumbCanvas.width = w; thumbCanvas.height = h;
-      thumbCanvas.getContext('2d').drawImage(video, 0, 0, w, h);
-      item.thumb = thumbCanvas.toDataURL('image/jpeg', 0.7);
-      if (item.img) { item.img.src = item.thumb; item.img.hidden = false; }
-    } catch (e) { item.thumbFailed = true; }
+      var url = paint(video, video.videoWidth, video.videoHeight, 0);
+      stat.live++; setThumb(item, url); cachePut(item.keys, url);
+    } catch (e) {}
   });
+
+  // 診断表示：左下の「1 / 12」をタップすると、コマ落ちなどの数字を出す（閉じている間は何もしない）
+  var diagTimer = 0;
+  video.addEventListener('waiting', function () { stat.waits++; });
+  function showDiag() {
+    var q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    var drop = q ? q.droppedVideoFrames : video.webkitDroppedFrameCount, total = q ? q.totalVideoFrames : video.webkitDecodedFrameCount;
+    $('diag').textContent = video.videoWidth + '×' + video.videoHeight +
+      '\nコマ落ち ' + (drop == null ? '?' : drop) + ' / ' + (total == null ? '?' : total) +
+      '\n読み込み待ち ' + stat.waits + '回' +
+      '\nサムネ 保存済' + stat.cached + ' 新規' + stat.direct + ' 再生中' + stat.live + ' 残り' + (jobs.length + (busy ? 1 : 0));
+  }
+  $('counter').onclick = function () {
+    var on = $('diag').hidden;
+    $('diag').hidden = !on;
+    clearInterval(diagTimer);
+    if (on) { showDiag(); diagTimer = setInterval(showDiag, 1000); }
+  };
 
   // 左スワイプで次の動画、右スワイプで前の動画
   var sx = 0, sy = 0, st = 0;
